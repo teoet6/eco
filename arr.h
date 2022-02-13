@@ -38,13 +38,15 @@ extern "C" {
 #error "Must define all or none of ARR_MALLOC, ARR_FREE, and ARR_REALLOC."
 #endif
 
-#define ARR_LEN(DATA)  (((size_t*)(DATA))[-1]) // The used elements
-#define ARR_CAP(DATA)  (((size_t*)(DATA))[-2]) // The allocated elements
-#define ARR_SIZE(DATA) (((size_t*)(DATA))[-3]) // The size of a single element
+#include <stdint.h>
+
+#define ARR_LEN(DATA)  (((int64_t*)(DATA))[-1]) // The used elements
+#define ARR_CAP(DATA)  (((int64_t*)(DATA))[-2]) // The allocated elements
+#define ARR_SIZE(DATA) (((int64_t*)(DATA))[-3]) // The size of a single element
 
 #define arr_len(DATA) ARR_LEN(DATA)
 
-#define ARR_DATA_OFFSET (3*sizeof(size_t))
+#define ARR_DATA_OFFSET (3*sizeof(int64_t))
 
 #define ARR_BASE(DATA) ((void*)(DATA) - ARR_DATA_OFFSET)
 #define ARR_DATA(BASE) ((void*)(BASE) + ARR_DATA_OFFSET)
@@ -52,10 +54,10 @@ extern "C" {
 #define ARR_HIGHER_CAP(DATA) (ARR_CAP(DATA) == 0 ? 1 : 2*ARR_CAP(DATA))
 #define ARR_LOWER_CAP(DATA)  (ARR_CAP(DATA) / 2)
 
-void *arr_create_(size_t size) {
-    void* data = ARR_DATA(ARR_MALLOC(ARR_DATA_OFFSET));
+void *arr_create_(int64_t size) {
+    void* data = ARR_DATA(ARR_MALLOC(ARR_DATA_OFFSET + size));
     ARR_LEN(data) = 0;
-    ARR_CAP(data) = 0;
+    ARR_CAP(data) = 1; // We keep place for a new 'pushed' element
     ARR_SIZE(data) = size;
     return data;
 }
@@ -63,7 +65,8 @@ void *arr_create_(size_t size) {
 
 #define arr_free(data) ARR_FREE(ARR_BASE(data))
 
-void arr_reserve_(void **data, size_t cap) {
+void arr_reserve_(void **data, int64_t cap) {
+    cap += 1; // We keep place for a new 'pushed' element
     void *base = ARR_BASE(*data);
     base = ARR_REALLOC(base, ARR_DATA_OFFSET + cap*ARR_SIZE(*data));
     *data = ARR_DATA(base);
@@ -71,10 +74,10 @@ void arr_reserve_(void **data, size_t cap) {
 }
 #define arr_reserve(data, cap) arr_reserve_((void**)data, cap)
 
-void arr_resize_(void **data, size_t len) {
+void arr_resize_(void **data, int64_t len) {
     if (len > ARR_LEN(*data)) {
         ARR_LEN(*data) = len;
-        while (ARR_LEN(*data) > ARR_CAP(*data))
+        while (ARR_LEN(*data)+1 > ARR_CAP(*data)) // We keep place for a new 'pushed' element
             arr_reserve_(data, ARR_HIGHER_CAP(*data));
     } else if (len < ARR_LEN(*data)) {
         ARR_LEN(*data) = len;
@@ -84,9 +87,9 @@ void arr_resize_(void **data, size_t len) {
 }
 #define arr_resize(data, len) arr_resize_((void**)(data), len)
 
-#define arr_push(data, value) ( arr_resize((data), arr_len(*data)+1), (*(data))[arr_len(*(data))-1] = (value) )
+#define arr_push(data, value) ( (*(data))[arr_len(*(data))] = (value), arr_resize((data), arr_len(*data)+1) )
 
-#define arr_pop(data) ( arr_resize((data), arr_len(*data)-1), (*(data))[arr_len(*(data))] )
+#define arr_pop(data) ( arr_resize((data), arr_len(*data)-1), (*(data))[arr_len(*(data))] = (*(data))[arr_len(*(data))] )
 
 #define arr_end(data) ((data) + arr_len(data))
 

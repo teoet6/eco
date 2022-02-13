@@ -5,30 +5,46 @@
 #include "pishtov.h"
 #include "arr.h"
 
-#define MOD(X, M) (((X) + (M)) % (M))
-
 #define FIELD_W 100
 #define FIELD_H 100
 #define INITIAL_CELLS_LEN 1000
-#define SYNAPSES_LEN 10
+#define SYNAPSES_LEN 20
 
-float ticks_per_second = 1000;
+float ticks_per_second = INITIAL_CELLS_LEN * 10.f;
 float seconds_since_last_tick = 0;
 
 enum Neuron_Id {
-    INPUT_BIAS,
-    INPUT_CELL_N,
-    INPUT_CELL_E,
-    INPUT_CELL_S,
-    INPUT_CELL_W,
+    IN_BIAS,
+    IN_CELL_N,
+    IN_CELL_E,
+    IN_CELL_S,
+    IN_CELL_W,
+    IN_ENERGY,
 
-    OUTPUT_MOVE_NS,
-    OUTPUT_MOVE_EW,
+    INTERNAL_A,
+    INTERNAL_B,
+
+    OUT_MOVE_N,
+    OUT_MOVE_E,
+    OUT_MOVE_S,
+    OUT_MOVE_W,
+    OUT_MITOSE_N,
+    OUT_MITOSE_E,
+    OUT_MITOSE_S,
+    OUT_MITOSE_W,
+    OUT_SLEEP,
 
     NEURONS_LEN,
 };
 
-struct Brain {
+struct Cell {
+    int64_t x;
+    int64_t y;
+    uint32_t color;
+    float energy;
+    float metabolism;
+    bool sleeping;
+
     float neurons[NEURONS_LEN];
     struct {
         int64_t src;
@@ -37,17 +53,13 @@ struct Brain {
     } synapses[SYNAPSES_LEN];
 };
 
-struct Cell {
-    int64_t x;
-    int64_t y;
-    uint32_t color;
-    bool dead;
-    struct Brain brain;
-};
-
-struct Cell *field[FIELD_W][FIELD_H];
+int64_t field[FIELD_W][FIELD_H];
 
 struct Cell *cells;
+
+int64_t mod(const int64_t x, const int64_t m) {
+    return ((x % m) + m) % m;
+}
 
 uint64_t rand64() {
     return
@@ -75,77 +87,128 @@ void init() {
 
     arr_resize(&cells, INITIAL_CELLS_LEN);
 
+    // memset(field, -1, FIELD_W * FIELD_H * sizeof(field[0][0]));
+    for (int64_t x = 0; x < FIELD_W; ++x) {
+        for (int64_t y = 0; y < FIELD_W; ++y) {
+            field[x][y] = -1;
+        }
+    }
+
     for (struct Cell *it = cells; it < arr_end(cells); ++it) {
         do {
             it->x = rand64() % FIELD_W;
             it->y = rand64() % FIELD_H;
-        } while (field[it->x][it->y]);
-        field[it->x][it->y] = it;
+        } while (field[it->x][it->y] != -1);
+        field[it->x][it->y] = it - cells;
 
         it->color = rand64() & 0xffffff;
-        it->dead = false;
+        it->metabolism = frandf();
+        it->energy = 1.f;
         for (int64_t i = 0; i < SYNAPSES_LEN; ++i) {
-            it->brain.synapses[i].src = rand64() % SYNAPSES_LEN;
-            it->brain.synapses[i].dst = rand64() % SYNAPSES_LEN;
-            it->brain.synapses[i].weight = sqrt(frandf());
+            it->synapses[i].src = rand64() % NEURONS_LEN;
+            it->synapses[i].dst = rand64() % NEURONS_LEN;
+            it->synapses[i].weight = frandf() * 2.f - 1.f;
         }
     }
 }
 
-void update_brain(struct Brain *b);
+void update_brain(size_t idx) {
+    cells[idx].neurons[IN_BIAS] = 1.f;
+    cells[idx].neurons[IN_CELL_N] = field[cells[idx].x][mod(cells[idx].y - 1, FIELD_H)] ? 1 : -1;
+    cells[idx].neurons[IN_CELL_E] = field[mod(cells[idx].x - 1, FIELD_W)][cells[idx].y] ? 1 : -1;
+    cells[idx].neurons[IN_CELL_S] = field[cells[idx].x][mod(cells[idx].y + 1, FIELD_H)] ? 1 : -1;
+    cells[idx].neurons[IN_CELL_W] = field[mod(cells[idx].x + 1, FIELD_W)][cells[idx].y] ? 1 : -1;
+    cells[idx].neurons[IN_ENERGY] = cells[idx].energy * 2.f - 1.f;
 
-void update_cell(struct Cell *c) {
-    if (c->dead) return;
+    float new_neurons[NEURONS_LEN];
+    for (int32_t i = 0; i < NEURONS_LEN; ++i) {
+        new_neurons[i] = 0;
+    }
 
-    field[c->x][c->y] = NULL;
+    for (int32_t i = 0; i < SYNAPSES_LEN; ++i) {
+        new_neurons[cells[idx].synapses[i].dst] += cells[idx].neurons[cells[idx].synapses[i].src] * cells[idx].synapses[i].weight;
+    }
 
-    int64_t dx = rand() % 3 - 1;
-    int64_t dy = rand() % 3 - 1;
-
-    // update_brain(struct Brain *b);
-    c->x += dx;
-    c->y += dy;
-
-    c->x = MOD(c->x, FIELD_W);
-    c->y = MOD(c->y, FIELD_H);
-
-    if (field[c->x][c->y]) field[c->x][c->y]->dead = true;
-
-    field[c->x][c->y] = c;
+    memcpy(cells[idx].neurons, new_neurons, sizeof(cells[idx].neurons));
 }
 
-void do_cleanup() {
-    int64_t shift = 0;
-    for (int64_t i = 0; i < arr_len(cells); ++i) {
-        if (cells[i].dead) {
-            ++shift;
-            continue;
-        }
+void kill_cell(int64_t *idx) {
+    cells[field[cells[*idx].x][cells[*idx].y]] = cells[arr_len(cells) - 1];
+    arr_pop(&cells);
+}
 
-        cells[i-shift] = cells[i];
-        field[cells[i-shift].x][cells[i-shift].y] = &cells[i-shift];
+void place_on_field(int64_t *idx) {
+    cells[field[cells[*idx].x][cells[*idx].y]] = cells[arr_len(cells) - 1];
+    if (*idx == arr_len(cells) - 1) *idx = arr_len(cells) - 1;
+    arr_pop(&cells);
+}
+
+void do_mitose(int64_t *idx, int64_t x, int64_t y) {
+    arr_push(&cells, cells[*idx]);
+
+    int64_t new = arr_len(cells) - 1;
+
+    cells[new].x = x;
+    cells[new].y = y;
+
+    place_on_field(&new);
+
+    cells[*idx].energy *= .5f;
+    cells[new].energy *= .5f;
+}
+
+void act_based_on_brain(int64_t *idx) {
+    int32_t max_neuron_id = OUT_MOVE_N;
+    for (int32_t i = 0; i < NEURONS_LEN; ++i) {
+        if (cells[*idx].neurons[max_neuron_id] < cells[*idx].neurons[i]) max_neuron_id = i;
     }
-    arr_resize(&cells, arr_len(cells)-shift);
+
+    switch (max_neuron_id) {
+    case OUT_MOVE_N: cells[*idx].y = mod(cells[*idx].y - 1, FIELD_H); break;
+    case OUT_MOVE_E: cells[*idx].x = mod(cells[*idx].x - 1, FIELD_W); break;
+    case OUT_MOVE_S: cells[*idx].y = mod(cells[*idx].y + 1, FIELD_H); break;
+    case OUT_MOVE_W: cells[*idx].x = mod(cells[*idx].x + 1, FIELD_W); break;
+
+    case OUT_MITOSE_N: do_mitose(idx, cells[*idx].x, mod(cells[*idx].y - 1, FIELD_H)); break;
+    case OUT_MITOSE_E: do_mitose(idx, mod(cells[*idx].x - 1, FIELD_W), cells[*idx].y); break;
+    case OUT_MITOSE_S: do_mitose(idx, cells[*idx].x, mod(cells[*idx].y + 1, FIELD_H)); break;
+    case OUT_MITOSE_W: do_mitose(idx, mod(cells[*idx].x + 1, FIELD_W), cells[*idx].y); break;
+
+    case OUT_SLEEP: cells[*idx].sleeping = true; return;
+    }
+}
+
+void update_cell(int64_t *idx) {
+    if (cells[*idx].sleeping) {
+        cells[*idx].energy += cells[*idx].metabolism;
+        if (cells[*idx].energy >= 1.f) {
+            cells[*idx].energy = 1.f;
+            cells[*idx].sleeping = false;
+        }
+        return;
+    }
+
+    cells[*idx].energy -= cells[*idx].metabolism;
+    if (cells[*idx].energy < 0.f) {
+        kill_cell(idx);
+        return;
+    }
+
+    field[cells[*idx].x][cells[*idx].y] = -1;
+
+    update_brain(*idx);
+
+    act_based_on_brain(idx);
+
+    place_on_field(idx);
 }
 
 void do_tick() {
     static int64_t idx;
 
-    while (cells[idx].dead) {
-        ++idx;
-        if (idx == arr_len(cells)) {
-            do_cleanup();
-            idx = 0;
-        }
-    }
+    update_cell(&idx);
 
-    update_cell(&cells[idx]);
-
-    ++idx;
-    if (idx == arr_len(cells)) {
-        do_cleanup();
-        idx = 0;
-    }
+    idx = (idx + 1) % arr_len(cells);
 }
 
 void update() {
@@ -170,13 +233,25 @@ void draw() {
     scale(fmin(window_w, window_h) / FIELD_W, fmin(window_w, window_h) / FIELD_H);
 
     for (struct Cell *it = cells; it < arr_end(cells); ++it) {
-        if (it->dead) continue;
-        fill_color(it->color);
+        if (it->sleeping) fill_color(0x808080);
+        else              fill_color(it->color);
         fill_ellipse(it->x + .5f, it->y + .5f, .5f, .5f);
     }
 }
 
-void keydown(int key) {}
+void keydown(int key) {
+    printf("%d\n", key);
+    switch (key) {
+    case 38:
+        ticks_per_second *= 2.f;
+        printf("%.0f tps\n", ticks_per_second);
+        break;
+    case 40:
+        ticks_per_second *= .5f;
+        printf("%.0f tps\n", ticks_per_second);
+        break;
+    }
+}
 
 void keyup(int key) {}
 

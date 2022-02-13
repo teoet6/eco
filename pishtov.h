@@ -1058,9 +1058,6 @@ void pshtv_redraw() {
     pglClearDepth(0.0);
     pglClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    float q = 2 / window_w;
-    float p = 2 / window_h;
-
     for (int i = 0; i < 4; ++i)
         for (int j = 0; j < 4; ++j)
             pshtv_transform_matrix[i][j] = i == j ? 1 : 0;
