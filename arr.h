@@ -40,22 +40,25 @@ extern "C" {
 
 #include <stdint.h>
 
-#define ARR_LEN(DATA)  (((int64_t*)(DATA))[-1]) // The used elements
-#define ARR_CAP(DATA)  (((int64_t*)(DATA))[-2]) // The allocated elements
-#define ARR_SIZE(DATA) (((int64_t*)(DATA))[-3]) // The size of a single element
+// The used elements
+#define ARR_LEN(DATA)  (((int64_t*)(DATA))[-1])
+// The allocated elements
+#define ARR_CAP(DATA)  (((int64_t*)(DATA))[-2])
+// The size of a single element
+#define ARR_SIZE(DATA) (((int64_t*)(DATA))[-3])
 
 #define arr_len(DATA) ARR_LEN(DATA)
 
-#define ARR_DATA_OFFSET (3*sizeof(int64_t))
+#define ARR_DATA_OFFSET (3 * sizeof(int64_t))
 
 #define ARR_BASE(DATA) ((void*)(DATA) - ARR_DATA_OFFSET)
 #define ARR_DATA(BASE) ((void*)(BASE) + ARR_DATA_OFFSET)
 
-#define ARR_HIGHER_CAP(DATA) (ARR_CAP(DATA) == 0 ? 1 : 2*ARR_CAP(DATA))
+#define ARR_HIGHER_CAP(DATA) (ARR_CAP(DATA) == 0 ? 1 : 2 * ARR_CAP(DATA))
 #define ARR_LOWER_CAP(DATA)  (ARR_CAP(DATA) / 2)
 
 void *arr_create_(int64_t size) {
-    void* data = ARR_DATA(ARR_MALLOC(ARR_DATA_OFFSET + size));
+    void *data = ARR_DATA(ARR_MALLOC(ARR_DATA_OFFSET + size));
     ARR_LEN(data) = 0;
     ARR_CAP(data) = 1; // We keep place for a new 'pushed' element
     ARR_SIZE(data) = size;

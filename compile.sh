@@ -1,4 +1,9 @@
 #!/bin/sh
 
-# gcc --std=c11 game.c -Wall -Werror -ldl -lX11 -lGL -lm -g -o game
-gcc -fno-sanitize-recover=undefined  -fsanitize=address --std=c11 game.c -Wall -Werror -ldl -lX11 -lGL -lm -g -o game
+# CFLAGS='-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer --std=c11 -Wall -Werror -ggdb'
+# CFLAGS='--std=c11 -Wall -Werror -ggdb'
+CFLAGS='--std=c11 -Wall -Werror -O2'
+
+LFLAGS='-ldl -lX11 -lGL -lm'
+
+gcc $CFLAGS game.c $LFLAGS -o game
