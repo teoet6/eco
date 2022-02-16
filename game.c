@@ -10,10 +10,11 @@
 #define FIELD_H 540
 
 #define INITIAL_CELLS_LEN 1000
-#define SYNAPSES_LEN 20
-#define MUTATION_CHANCE .0001f
+#define SYNAPSES_LEN 50
+#define MUTATION_CHANCE .00001f
+#define MINIMUM_METABOLISM .02f
 
-float ticks_per_second = 1000.f;
+float ticks_per_second = 1024000.f;
 float seconds_since_last_tick = 0;
 
 enum Neuron_Id {
@@ -130,12 +131,12 @@ void create_random_cell() {
         if (++tries > 100) return;
     } while (field[new->x][new->y]);
     {
-        int8_t dir = rand64() % 4;
+        int8_t dir = rand() % 4;
         new->dir_x = ( dir & 1) * -(dir >> 1);
         new->dir_y = (~dir & 1) * -(dir >> 1);
     }
     new->color = rand64() & 0xffffff;
-    new->metabolism = frandf();
+    new->metabolism = frandf() + MINIMUM_METABOLISM;
     new->energy = 1.f;
     new->sleeping = false;
     for (int64_t i = 0; i < SYNAPSES_LEN; ++i) {
@@ -149,7 +150,6 @@ void create_random_cell() {
 
 void init() {
     uint32_t seed = get_timestamp();
-    // seed = 0xf22e92f5;
     printf("    seed = 0x%08x;\n", seed);
     srand(seed);
 
@@ -213,10 +213,7 @@ void update_brain(struct Cell *c) {
 
     c->neurons[IN_ENERGY] = c->energy * 2.f - 1.f;
 
-    float new_neurons[NEURONS_LEN];
-    for (int32_t i = 0; i < NEURONS_LEN; ++i) {
-        new_neurons[i] = 0;
-    }
+    float new_neurons[NEURONS_LEN] = {};
 
     for (int32_t i = 0; i < SYNAPSES_LEN; ++i) {
         new_neurons[c->synapses[i].dst] += c->neurons[c->synapses[i].src] * c->synapses[i].weight;
@@ -232,7 +229,7 @@ void kill_cell(struct Cell *c) {
 void mutate(struct Cell *c, float mutation_chance) {
     if (frandf() < mutation_chance) {
         c->color = rand64() & 0xffffff;
-        c->metabolism = frandf();
+        c->metabolism = frandf() + MINIMUM_METABOLISM;
     }
 
     for (uint64_t i = 0; i < SYNAPSES_LEN; ++i) {
@@ -302,8 +299,9 @@ struct Cell *update_cell(struct Cell *c) {
         if (c->energy >= 1.f) {
             c->energy = 1.f;
             c->sleeping = false;
+        } else {
+            return c->next;
         }
-        return c->next;
     }
 
 
@@ -359,10 +357,9 @@ void draw() {
     }
 
     for (struct Cell *it = cells_head; it; it = it->next) {
-        if (it->sleeping) fill_color(0x808080);
-        else              fill_color(it->color);
+        uint32_t color = (it->sleeping * 0x808080) | (!it->sleeping * it->color);
+        fill_color(color);
 
-        // fill_ellipse(it->x + .5f, it->y + .5f, .5f, .5f);
         fill_rect(it->x, it->y, 1.f, 1.f);
     }
 }
