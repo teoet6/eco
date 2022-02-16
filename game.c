@@ -2,37 +2,50 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
-#include <assert.h>
 #include "pishtov.h"
 
-#define FIELD_W 240
-#define FIELD_H 135
+// #define FIELD_W 240
+// #define FIELD_H 135
+#define FIELD_W 960
+#define FIELD_H 540
+
 #define INITIAL_CELLS_LEN 1000
-#define SYNAPSES_LEN 10
-#define MUTATION_CHANCE .001f
+#define SYNAPSES_LEN 20
+#define MUTATION_CHANCE .0001f
 
 float ticks_per_second = 1000.f;
 float seconds_since_last_tick = 0;
 
 enum Neuron_Id {
     IN_BIAS,
-    IN_CELL_N,
-    IN_CELL_E,
-    IN_CELL_S,
-    IN_CELL_W,
+    IN_LIKE_U,
+    IN_LIKE_R,
+    IN_LIKE_D,
+    IN_LIKE_L,
+    IN_EATABLE_U,
+    IN_EATABLE_R,
+    IN_EATABLE_D,
+    IN_EATABLE_L,
+    IN_NORTH_U,
+    IN_NORTH_R,
+    IN_NORTH_D,
+    IN_NORTH_L,
     IN_ENERGY,
 
     INTERNAL_A,
     INTERNAL_B,
+    INTERNAL_C,
+    INTERNAL_D,
+    INTERNAL_E,
 
-    OUT_MOVE_N,
-    OUT_MOVE_E,
-    OUT_MOVE_S,
-    OUT_MOVE_W,
-    OUT_MITOSE_N,
-    OUT_MITOSE_E,
-    OUT_MITOSE_S,
-    OUT_MITOSE_W,
+    OUT_MOVE_U,
+    OUT_MOVE_R,
+    OUT_MOVE_D,
+    OUT_MOVE_L,
+    OUT_MITOSE_U,
+    OUT_MITOSE_R,
+    OUT_MITOSE_D,
+    OUT_MITOSE_L,
     OUT_SLEEP,
 
     NEURONS_LEN,
@@ -41,6 +54,9 @@ enum Neuron_Id {
 struct Cell {
     int64_t x;
     int64_t y;
+    int8_t dir_x;
+    int8_t dir_y;
+
     uint32_t color;
     float energy;
     float metabolism;
@@ -104,39 +120,97 @@ void free_cell(struct Cell **head, struct Cell *c) {
     free(c);
 }
 
+void create_random_cell() {
+    struct Cell *new = alloc_cell(&cells_head);
+
+    int64_t tries = 0;
+    do {
+        new->x = rand64() % FIELD_W;
+        new->y = rand64() % FIELD_H;
+        if (++tries > 100) return;
+    } while (field[new->x][new->y]);
+    {
+        int8_t dir = rand64() % 4;
+        new->dir_x = ( dir & 1) * -(dir >> 1);
+        new->dir_y = (~dir & 1) * -(dir >> 1);
+    }
+    new->color = rand64() & 0xffffff;
+    new->metabolism = frandf();
+    new->energy = 1.f;
+    new->sleeping = false;
+    for (int64_t i = 0; i < SYNAPSES_LEN; ++i) {
+        new->synapses[i].src = rand64() % NEURONS_LEN;
+        new->synapses[i].dst = rand64() % NEURONS_LEN;
+        new->synapses[i].weight = frandf() * 2.f - 1.f;
+    }
+
+    field[new->x][new->y] = new;
+}
+
 void init() {
     uint32_t seed = get_timestamp();
     // seed = 0xf22e92f5;
     printf("    seed = 0x%08x;\n", seed);
     srand(seed);
 
-    for (int i = 0; i < INITIAL_CELLS_LEN; ++i) {
-        struct Cell *new = alloc_cell(&cells_head);
+    for (uint64_t i = 0; i < INITIAL_CELLS_LEN; ++i) {
+        create_random_cell(&cells_head);
+    }
+}
 
-        do {
-            new->x = rand64() % FIELD_W;
-            new->y = rand64() % FIELD_H;
-        } while (field[new->x][new->y]);
-        new->color = rand64() & 0xffffff;
-        new->metabolism = frandf();
-        new->energy = 1.f;
-        new->sleeping = false;
-        for (int64_t i = 0; i < SYNAPSES_LEN; ++i) {
-            new->synapses[i].src = rand64() % NEURONS_LEN;
-            new->synapses[i].dst = rand64() % NEURONS_LEN;
-            new->synapses[i].weight = frandf() * 2.f - 1.f;
-        }
+float get_in_like(struct Cell *c, int8_t dx, int8_t dy) {
+    struct Cell *other = field[mod(c->x + dx, FIELD_W)][mod(c->y + dy, FIELD_H)];
+    if (!other) return 0.f;
+    return other->color == c->color ? 1.f : -1.f;
+}
 
-        field[new->x][new->y] = new;
+float get_in_eatable(struct Cell *c, int8_t dx, int8_t dy) {
+    struct Cell *other = field[mod(c->x + dx, FIELD_W)][mod(c->y + dy, FIELD_H)];
+    if (!other) return 0.f;
+    return other->sleeping || c->energy > other->energy ? 1.f : -1.f;
+}
+
+// True if dead
+bool place_on_field_or_die(struct Cell *c) {
+    float eatable = get_in_eatable(c, 0, 0);
+
+    if (eatable == 0.f) {
+        field[c->x][c->y] = c;
+        return false;
+    }
+
+    float energy_sum = fmin(1.f, c->energy + field[c->x][c->y]->energy);
+
+    if (eatable == 1.f) {
+        c->energy = energy_sum;
+        free_cell(&cells_head, field[c->x][c->y]);
+        field[c->x][c->y] = c;
+        return false;
+    } else {
+        field[c->x][c->y]->energy = energy_sum;
+        free_cell(&cells_head, c);
+        return true;
     }
 }
 
 void update_brain(struct Cell *c) {
     c->neurons[IN_BIAS] = 1.f;
-    c->neurons[IN_CELL_N] = field[c->x][mod(c->y - 1, FIELD_H)] ? 1 : -1;
-    c->neurons[IN_CELL_E] = field[mod(c->x - 1, FIELD_W)][c->y] ? 1 : -1;
-    c->neurons[IN_CELL_S] = field[c->x][mod(c->y + 1, FIELD_H)] ? 1 : -1;
-    c->neurons[IN_CELL_W] = field[mod(c->x + 1, FIELD_W)][c->y] ? 1 : -1;
+
+    c->neurons[IN_LIKE_U] = get_in_like(c,  c->dir_x,  c->dir_y);
+    c->neurons[IN_LIKE_L] = get_in_like(c, -c->dir_y,  c->dir_x);
+    c->neurons[IN_LIKE_D] = get_in_like(c, -c->dir_x, -c->dir_y);
+    c->neurons[IN_LIKE_R] = get_in_like(c,  c->dir_x, -c->dir_x);
+
+    c->neurons[IN_EATABLE_U] = get_in_eatable(c,  c->dir_x,  c->dir_y);
+    c->neurons[IN_EATABLE_L] = get_in_eatable(c, -c->dir_y,  c->dir_x);
+    c->neurons[IN_EATABLE_D] = get_in_eatable(c, -c->dir_x, -c->dir_y);
+    c->neurons[IN_EATABLE_R] = get_in_eatable(c,  c->dir_x, -c->dir_x);
+
+    c->neurons[IN_NORTH_U] = c->dir_y == -1 ? 1.f : -1.f;
+    c->neurons[IN_NORTH_L] = c->dir_x == -1 ? 1.f : -1.f;
+    c->neurons[IN_NORTH_D] = c->dir_y ==  1 ? 1.f : -1.f;
+    c->neurons[IN_NORTH_R] = c->dir_x ==  1 ? 1.f : -1.f;
+
     c->neurons[IN_ENERGY] = c->energy * 2.f - 1.f;
 
     float new_neurons[NEURONS_LEN];
@@ -155,22 +229,13 @@ void kill_cell(struct Cell *c) {
     field[c->x][c->y] = NULL;
     free_cell(&cells_head, c);
 }
-
-void place_on_field(struct Cell *c) {
-    if (field[c->x][c->y]) {
-        c->energy = fmin(1.f, c->energy + field[c->x][c->y]->energy);
-        free_cell(&cells_head, field[c->x][c->y]);
-    }
-    field[c->x][c->y] = c;
-}
-
 void mutate(struct Cell *c, float mutation_chance) {
     if (frandf() < mutation_chance) {
         c->color = rand64() & 0xffffff;
         c->metabolism = frandf();
     }
 
-    for (int i = 0; i < SYNAPSES_LEN; ++i) {
+    for (uint64_t i = 0; i < SYNAPSES_LEN; ++i) {
         if (frandf() < mutation_chance) {
             c->color = rand64() & 0xffffff;
             c->synapses[i].src = rand64() % NEURONS_LEN;
@@ -180,7 +245,15 @@ void mutate(struct Cell *c, float mutation_chance) {
     }
 }
 
-void do_mitose(struct Cell *c, int64_t x, int64_t y) {
+void do_move(struct Cell *c, int8_t dx, int8_t dy) {
+    c->x = mod(c->x + dx, FIELD_W);
+    c->y = mod(c->y + dy, FIELD_H);
+
+    c->dir_x = dx;
+    c->dir_y = dy;
+}
+
+void do_mitose(struct Cell *c, int8_t dx, int8_t dy) {
     struct Cell *new = alloc_cell(&cells_head);
     {
         struct Cell *next = new->next;
@@ -192,31 +265,32 @@ void do_mitose(struct Cell *c, int64_t x, int64_t y) {
 
     mutate(new, MUTATION_CHANCE);
 
-    new->x = x;
-    new->y = y;
-
-    place_on_field(new);
+    do_move(new, dx, dy);
+    c->dir_x = -dx;
+    c->dir_y = -dy;
 
     new->energy *= .5f;
     c  ->energy *= .5f;
+
+    place_on_field_or_die(new);
 }
 
 void act_based_on_brain(struct Cell *c) {
-    int32_t max_neuron_id = OUT_MOVE_N;
+    int32_t max_neuron_id = OUT_MOVE_U;
     for (int32_t i = max_neuron_id; i < NEURONS_LEN; ++i) {
         if (c->neurons[max_neuron_id] < c->neurons[i]) max_neuron_id = i;
     }
 
     switch (max_neuron_id) {
-    case OUT_MOVE_N: c->y = mod(c->y - 1, FIELD_H); break;
-    case OUT_MOVE_E: c->x = mod(c->x - 1, FIELD_W); break;
-    case OUT_MOVE_S: c->y = mod(c->y + 1, FIELD_H); break;
-    case OUT_MOVE_W: c->x = mod(c->x + 1, FIELD_W); break;
+    case OUT_MOVE_U: do_move(c,  c->dir_x,  c->dir_y); break;
+    case OUT_MOVE_L: do_move(c, -c->dir_y,  c->dir_x); break;
+    case OUT_MOVE_D: do_move(c, -c->dir_x, -c->dir_y); break;
+    case OUT_MOVE_R: do_move(c,  c->dir_y, -c->dir_x); break;
 
-    case OUT_MITOSE_N: do_mitose(c, c->x, mod(c->y - 1, FIELD_H)); break;
-    case OUT_MITOSE_E: do_mitose(c, mod(c->x - 1, FIELD_W), c->y); break;
-    case OUT_MITOSE_S: do_mitose(c, c->x, mod(c->y + 1, FIELD_H)); break;
-    case OUT_MITOSE_W: do_mitose(c, mod(c->x + 1, FIELD_W), c->y); break;
+    case OUT_MITOSE_U: do_mitose(c,  c->dir_x,  c->dir_y); break;
+    case OUT_MITOSE_L: do_mitose(c, -c->dir_y,  c->dir_x); break;
+    case OUT_MITOSE_D: do_mitose(c, -c->dir_x, -c->dir_y); break;
+    case OUT_MITOSE_R: do_mitose(c,  c->dir_y, -c->dir_x); break;
 
     case OUT_SLEEP: c->sleeping = true; break;
     }
@@ -245,23 +319,18 @@ struct Cell *update_cell(struct Cell *c) {
     update_brain(c);
     act_based_on_brain(c);
 
-    place_on_field(c);
-
+    struct Cell *next = c->next;
+    if (place_on_field_or_die(c)) return next;
     return c->next;
 }
 
 void do_tick() {
-    if (!cells_head) {
-        static bool displayed_message = false;
-        if (!displayed_message) {
-            printf("Game over\n");
-            displayed_message = true;
-        }
-        return;
-    }
-
     static struct Cell *cur;
-    if (!cur) cur = cells_head;
+
+    if (!cur) {
+        create_random_cell();
+        cur = cells_head;
+    }
     cur = update_cell(cur);
 }
 
