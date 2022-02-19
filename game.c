@@ -356,12 +356,18 @@ void draw() {
         scale(min_scale, min_scale);
     }
 
+    uint8_t buf[FIELD_W * FIELD_H * 4];
+    memset(buf, 0xff, FIELD_W * FIELD_H * 4);
+
     for (struct Cell *it = cells_head; it; it = it->next) {
         uint32_t color = (it->sleeping * 0x808080) | (!it->sleeping * it->color);
-        fill_color(color);
 
-        fill_rect(it->x, it->y, 1.f, 1.f);
+        buf[4 * (it->y * FIELD_W + it->x) + 0] = color >> 16 & 0xff;
+        buf[4 * (it->y * FIELD_W + it->x) + 1] = color >>  8 & 0xff;
+        buf[4 * (it->y * FIELD_W + it->x) + 2] = color       & 0xff;
     }
+
+    draw_image_buffer(buf, FIELD_W, FIELD_H, 0, 0, FIELD_W, FIELD_H);
 }
 
 void keydown(int key) {
