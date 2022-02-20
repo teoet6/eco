@@ -11,8 +11,9 @@
 
 #define INITIAL_CELLS_LEN 1000
 #define SYNAPSES_LEN 50
-#define MUTATION_CHANCE .00001f
-#define MINIMUM_METABOLISM .02f
+#define MUTATION_CHANCE .0001f
+#define MINIMUM_METABOLISM 0.f
+#define ENERGY_MULTIPLIED_AFER_MITOSIS .5f
 
 float ticks_per_second = 1024000.f;
 float seconds_since_last_tick = 0;
@@ -74,25 +75,48 @@ struct Cell {
     struct Cell *prev;
 };
 
+struct Cell_Arena {
+    int64_t cap; // constant
+    int64_t len;
+    struct Cell *data;
+    struct Cell **free;
+
+    struct Cell *head;
+};
+
 struct Cell *field[FIELD_W][FIELD_H];
 
-struct Cell *cells_head;
+struct Cell_Arena cell_arena;
 
 int64_t mod(const int64_t x, const int64_t m) {
     return ((x % m) + m) % m;
 }
 
+static unsigned long xorshf_x=123456789, xorshf_y=362436069, xorshf_z=521288629;
+
+// xorshf96
+// period 2^96-1
 uint64_t rand64() {
-    return
-        (uint64_t) rand()       ^
-        (uint64_t) rand() << 15 ^
-        (uint64_t) rand() << 30 ^
-        (uint64_t) rand() << 45 ^
-        (uint64_t) rand() << 60;
+    uint64_t t;
+    xorshf_x ^= xorshf_x << 16;
+    xorshf_x ^= xorshf_x >> 5;
+    xorshf_x ^= xorshf_x << 1;
+
+    t = xorshf_x;
+    xorshf_x = xorshf_y;
+    xorshf_y = xorshf_z;
+    xorshf_z = t ^ xorshf_x ^ xorshf_y;
+
+    return xorshf_z;
+}
+
+void srand64(uint64_t seed) {
+    seed &= 0x0fffff;
+    for (uint64_t i = 0; i < seed; ++i) rand64();
 }
 
 float frandf() {
-    return (float) rand() / (float) RAND_MAX;
+    return (rand64() & 0xffffff) / 16777216.f;
 }
 
 uint64_t get_timestamp() {
@@ -101,28 +125,45 @@ uint64_t get_timestamp() {
     return ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
 
-struct Cell *alloc_cell(struct Cell **head) {
-    struct Cell *new = malloc(sizeof(*new));
+void init_cell_arena(struct Cell_Arena *ca, int64_t cap) {
+    ca->cap = cap;
+    ca->len = 0;
+    ca->head = NULL;
+    ca->data = malloc((sizeof(*ca->data) + sizeof(*ca->free)) * ca->cap);
+    ca->free = (void*)ca->data + sizeof(*ca->data) * ca->cap;
 
-    new->next = *head;
+    for (int64_t i = 0; i < ca->cap; ++i) {
+        ca->free[i] = ca->data + i;
+    }
+}
+
+void deinit_cell_arena(struct Cell_Arena *ca) {
+    free(ca->data);
+}
+
+struct Cell *alloc_cell(struct Cell_Arena *ca) {
+    struct Cell *new = ca->free[ca->len++];
+
+    new->next = ca->head;
     new->prev = NULL;
 
     if (new->next) new->next->prev = new;
 
-    *head = new;
+    ca->head = new;
 
     return new;
 }
 
-void free_cell(struct Cell **head, struct Cell *c) {
+void free_cell(struct Cell_Arena *ca, struct Cell *c) {
     if (c->prev) c->prev->next = c->next;
     if (c->next) c->next->prev = c->prev;
-    if (*head == c) *head = c->next;
-    free(c);
+    if (ca->head == c) ca->head = c->next;
+
+    ca->free[--ca->len] = c;
 }
 
 void create_random_cell() {
-    struct Cell *new = alloc_cell(&cells_head);
+    struct Cell *new = alloc_cell(&cell_arena);
 
     int64_t tries = 0;
     do {
@@ -131,7 +172,7 @@ void create_random_cell() {
         if (++tries > 100) return;
     } while (field[new->x][new->y]);
     {
-        int8_t dir = rand() % 4;
+        int8_t dir = rand64() % 4;
         new->dir_x = ( dir & 1) * -(dir >> 1);
         new->dir_y = (~dir & 1) * -(dir >> 1);
     }
@@ -149,25 +190,28 @@ void create_random_cell() {
 }
 
 void init() {
-    uint32_t seed = get_timestamp();
-    printf("    seed = 0x%08x;\n", seed);
-    srand(seed);
+    srand64(get_timestamp());
+
+    // Add ten cells of breathing space
+    init_cell_arena(&cell_arena, FIELD_W * FIELD_H + 10);
 
     for (uint64_t i = 0; i < INITIAL_CELLS_LEN; ++i) {
-        create_random_cell(&cells_head);
+        create_random_cell(&cell_arena);
     }
 }
 
 float get_in_like(struct Cell *c, int8_t dx, int8_t dy) {
     struct Cell *other = field[mod(c->x + dx, FIELD_W)][mod(c->y + dy, FIELD_H)];
     if (!other) return 0.f;
-    return other->color == c->color ? 1.f : -1.f;
+    uint32_t diff = other->color ^ c->color;
+    diff = (diff & 0xff) | (diff >> 8 & 0xff) | (diff >> 16 & 0xff);
+    return diff / 128.f - 1.f;
 }
 
 float get_in_eatable(struct Cell *c, int8_t dx, int8_t dy) {
     struct Cell *other = field[mod(c->x + dx, FIELD_W)][mod(c->y + dy, FIELD_H)];
     if (!other) return 0.f;
-    return other->sleeping || c->energy > other->energy ? 1.f : -1.f;
+    return /* other->sleeping || */ c->energy > other->energy ? 1.f : -1.f;
 }
 
 // True if dead
@@ -183,17 +227,17 @@ bool place_on_field_or_die(struct Cell *c) {
 
     if (eatable == 1.f) {
         c->energy = energy_sum;
-        free_cell(&cells_head, field[c->x][c->y]);
+        free_cell(&cell_arena, field[c->x][c->y]);
         field[c->x][c->y] = c;
         return false;
     } else {
         field[c->x][c->y]->energy = energy_sum;
-        free_cell(&cells_head, c);
+        free_cell(&cell_arena, c);
         return true;
     }
 }
 
-void update_brain(struct Cell *c) {
+void set_brain_inputs(struct Cell *c) {
     c->neurons[IN_BIAS] = 1.f;
 
     c->neurons[IN_LIKE_U] = get_in_like(c,  c->dir_x,  c->dir_y);
@@ -212,7 +256,9 @@ void update_brain(struct Cell *c) {
     c->neurons[IN_NORTH_R] = c->dir_x ==  1 ? 1.f : -1.f;
 
     c->neurons[IN_ENERGY] = c->energy * 2.f - 1.f;
+}
 
+void update_brain(struct Cell *c) {
     float new_neurons[NEURONS_LEN] = {};
 
     for (int32_t i = 0; i < SYNAPSES_LEN; ++i) {
@@ -224,20 +270,33 @@ void update_brain(struct Cell *c) {
 
 void kill_cell(struct Cell *c) {
     field[c->x][c->y] = NULL;
-    free_cell(&cells_head, c);
+    free_cell(&cell_arena, c);
 }
+
+uint32_t similar_color(uint32_t col) {
+    uint32_t r = (rand64() & 0xf0) | 0x10;
+    uint32_t g = (rand64() & 0xf0) | 0x10;
+    uint32_t b = (rand64() & 0xf0) | 0x10;
+
+    r = (r & -r) - 1;
+    g = (g & -g) - 1;
+    b = (b & -b) - 1;
+
+    return col ^ (r << 16 | g << 8 | b);
+}
+
 void mutate(struct Cell *c, float mutation_chance) {
     if (frandf() < mutation_chance) {
-        c->color = rand64() & 0xffffff;
         c->metabolism = frandf() + MINIMUM_METABOLISM;
+        c->color = similar_color(c->color);
     }
 
     for (uint64_t i = 0; i < SYNAPSES_LEN; ++i) {
         if (frandf() < mutation_chance) {
-            c->color = rand64() & 0xffffff;
             c->synapses[i].src = rand64() % NEURONS_LEN;
             c->synapses[i].dst = rand64() % NEURONS_LEN;
             c->synapses[i].weight = frandf() * 2.f - 1.f;
+            c->color = similar_color(c->color);
         }
     }
 }
@@ -251,7 +310,7 @@ void do_move(struct Cell *c, int8_t dx, int8_t dy) {
 }
 
 void do_mitose(struct Cell *c, int8_t dx, int8_t dy) {
-    struct Cell *new = alloc_cell(&cells_head);
+    struct Cell *new = alloc_cell(&cell_arena);
     {
         struct Cell *next = new->next;
         struct Cell *prev = new->prev;
@@ -266,13 +325,13 @@ void do_mitose(struct Cell *c, int8_t dx, int8_t dy) {
     c->dir_x = -dx;
     c->dir_y = -dy;
 
-    new->energy *= .5f;
-    c  ->energy *= .5f;
+    new->energy *= ENERGY_MULTIPLIED_AFER_MITOSIS;
+    c  ->energy *= ENERGY_MULTIPLIED_AFER_MITOSIS;
 
     place_on_field_or_die(new);
 }
 
-void act_based_on_brain(struct Cell *c) {
+void act_based_on_brain_outputs(struct Cell *c) {
     int32_t max_neuron_id = OUT_MOVE_U;
     for (int32_t i = max_neuron_id; i < NEURONS_LEN; ++i) {
         if (c->neurons[max_neuron_id] < c->neurons[i]) max_neuron_id = i;
@@ -314,8 +373,9 @@ struct Cell *update_cell(struct Cell *c) {
 
     field[c->x][c->y] = NULL;
 
+    set_brain_inputs(c);
     update_brain(c);
-    act_based_on_brain(c);
+    act_based_on_brain_outputs(c);
 
     struct Cell *next = c->next;
     if (place_on_field_or_die(c)) return next;
@@ -327,7 +387,7 @@ void do_tick() {
 
     if (!cur) {
         create_random_cell();
-        cur = cells_head;
+        cur = cell_arena.head;
     }
     cur = update_cell(cur);
 }
@@ -359,8 +419,8 @@ void draw() {
     uint8_t buf[FIELD_W * FIELD_H * 4];
     memset(buf, 0xff, FIELD_W * FIELD_H * 4);
 
-    for (struct Cell *it = cells_head; it; it = it->next) {
-        uint32_t color = (it->sleeping * 0x808080) | (!it->sleeping * it->color);
+    for (struct Cell *it = cell_arena.head; it; it = it->next) {
+        uint32_t color = it->sleeping ? 0x808080 : it->color;
 
         buf[4 * (it->y * FIELD_W + it->x) + 0] = color >> 16 & 0xff;
         buf[4 * (it->y * FIELD_W + it->x) + 1] = color >>  8 & 0xff;
