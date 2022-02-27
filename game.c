@@ -1,8 +1,13 @@
 #include <stdio.h>
+#include <math.h>
+#include <assert.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
 #include "pishtov.h"
+
+#define PI 3.141592653589793238
+#define E  2.718281828459045235
 
 // #define FIELD_W 240
 // #define FIELD_H 135
@@ -10,7 +15,7 @@
 #define FIELD_H 540
 
 #define INITIAL_CELLS_LEN 1000
-#define SYNAPSES_LEN 50
+#define SYNAPSES_LEN 30
 #define MUTATION_CHANCE .0001f
 #define MINIMUM_METABOLISM 0.f
 #define ENERGY_MULTIPLIED_AFER_MITOSIS .5f
@@ -53,6 +58,12 @@ enum Neuron_Id {
     NEURONS_LEN,
 };
 
+enum Combining_Function_Id {
+    COMB_SIGMOID,
+    COMB_COS,
+    COMB_LEN,
+};
+
 struct Cell {
     int64_t x;
     int64_t y;
@@ -65,6 +76,7 @@ struct Cell {
     bool sleeping;
 
     float neurons[NEURONS_LEN];
+    enum Combining_Function_Id neuron_combs[NEURONS_LEN];
     struct {
         int64_t src;
         int64_t dst;
@@ -112,6 +124,7 @@ uint64_t rand64() {
 
 void srand64(uint64_t seed) {
     seed &= 0x0fffff;
+    printf("    seed = 0x%lx;\n", seed);
     for (uint64_t i = 0; i < seed; ++i) rand64();
 }
 
@@ -162,6 +175,16 @@ void free_cell(struct Cell_Arena *ca, struct Cell *c) {
     ca->free[--ca->len] = c;
 }
 
+float comb_sigmoid(float x) {
+    const float y = 1.f / (1.f + powf(E, 4.f * x));
+    return -2.f * y + 1.f;
+}
+
+float comb_cos(float x) {
+    if (x > 1.f || x < -1.f) return 1.f;
+    return -cosf(PI * x);
+}
+
 void create_random_cell() {
     struct Cell *new = alloc_cell(&cell_arena);
 
@@ -184,6 +207,9 @@ void create_random_cell() {
         new->synapses[i].src = rand64() % NEURONS_LEN;
         new->synapses[i].dst = rand64() % NEURONS_LEN;
         new->synapses[i].weight = frandf() * 2.f - 1.f;
+    }
+    for (int64_t i = 0; i < NEURONS_LEN; ++i) {
+        new->neuron_combs[i] = rand64() % COMB_LEN;
     }
 
     field[new->x][new->y] = new;
@@ -211,7 +237,7 @@ float get_in_like(struct Cell *c, int8_t dx, int8_t dy) {
 float get_in_eatable(struct Cell *c, int8_t dx, int8_t dy) {
     struct Cell *other = field[mod(c->x + dx, FIELD_W)][mod(c->y + dy, FIELD_H)];
     if (!other) return 0.f;
-    return /* other->sleeping || */ c->energy > other->energy ? 1.f : -1.f;
+    return other->sleeping || c->energy > other->energy ? 1.f : -1.f;
 }
 
 // True if dead
@@ -265,7 +291,13 @@ void update_brain(struct Cell *c) {
         new_neurons[c->synapses[i].dst] += c->neurons[c->synapses[i].src] * c->synapses[i].weight;
     }
 
-    memcpy(c->neurons, new_neurons, sizeof(c->neurons));
+    for (int32_t i = 0; i < NEURONS_LEN; ++i) {
+        switch (c->neuron_combs[i]) {
+        case COMB_SIGMOID: c->neurons[i] = comb_sigmoid(new_neurons[i]); break;
+        case COMB_COS:     c->neurons[i] = comb_cos    (new_neurons[i]); break;
+        default: assert(false);
+        }
+    }
 }
 
 void kill_cell(struct Cell *c) {
@@ -296,6 +328,13 @@ void mutate(struct Cell *c, float mutation_chance) {
             c->synapses[i].src = rand64() % NEURONS_LEN;
             c->synapses[i].dst = rand64() % NEURONS_LEN;
             c->synapses[i].weight = frandf() * 2.f - 1.f;
+            c->color = similar_color(c->color);
+        }
+    }
+
+    for (uint64_t i = 0; i < NEURONS_LEN; ++i) {
+        if (frandf() < mutation_chance) {
+            c->neuron_combs[i] = rand64() % COMB_LEN;
             c->color = similar_color(c->color);
         }
     }
